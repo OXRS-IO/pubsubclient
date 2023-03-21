@@ -330,7 +330,13 @@ uint32_t PubSubClient::readPacket(uint8_t* lengthLength) {
         this->buffer[len++] = digit;
         length += (digit & 127) * multiplier;
         multiplier <<=7; //multiplier *= 128
-    } while ((digit & 128) != 0);
+
+// Start Tasmota patch
+//    } while ((digit & 128) != 0);
+
+    } while ((digit & 128) != 0 && len < (this->bufferSize-2));
+// End Tasmota patch
+
     *lengthLength = len-1;
 
     if (isPublish) {
@@ -378,9 +384,18 @@ boolean PubSubClient::loop() {
             } else {
                 this->buffer[0] = MQTTPINGREQ;
                 this->buffer[1] = 0;
-                _client->write(this->buffer,2);
-                lastOutActivity = t;
-                lastInActivity = t;
+
+// Start Tasmota patch
+//                _client->write(this->buffer,2);
+//                lastOutActivity = t;
+//                lastInActivity = t;
+
+                if (_client->write(this->buffer,2) != 0) {
+                  lastOutActivity = t;
+                  lastInActivity = t;
+                }
+// End Tasmota patch
+
                 pingOutstanding = true;
             }
         }
@@ -395,6 +410,17 @@ boolean PubSubClient::loop() {
                 if (type == MQTTPUBLISH) {
                     if (callback) {
                         uint16_t tl = (this->buffer[llen+1]<<8)+this->buffer[llen+2]; /* topic length in bytes */
+
+// Start Tasmota patch
+// Observed heap corruption in some cases since v10.0.0
+// Also see https://github.com/knolleary/pubsubclient/pull/843
+                        if (llen+3+tl>this->bufferSize) {
+                          _state = MQTT_DISCONNECTED;
+                          _client->stop();
+                          return false;
+                        }
+// End Tasmota patch
+
                         memmove(this->buffer+llen+2,this->buffer+llen+3,tl); /* move topic inside buffer 1 byte to front */
                         this->buffer[llen+2+tl] = 0; /* end the topic as a 'C' string with \x00 */
                         char *topic = (char*) this->buffer+llen+2;
@@ -408,8 +434,15 @@ boolean PubSubClient::loop() {
                             this->buffer[1] = 2;
                             this->buffer[2] = (msgId >> 8);
                             this->buffer[3] = (msgId & 0xFF);
-                            _client->write(this->buffer,4);
-                            lastOutActivity = t;
+
+// Start Tasmota patch
+//                            _client->write(this->buffer,4);
+//                            lastOutActivity = t;
+
+                            if (_client->write(this->buffer,4) != 0) {
+                              lastOutActivity = t;
+                            }
+// End Tasmota patch
 
                         } else {
                             payload = this->buffer+llen+3+tl;
@@ -516,7 +549,13 @@ boolean PubSubClient::publish_P(const char* topic, const uint8_t* payload, unsig
         rc += _client->write((char)pgm_read_byte_near(payload + i));
     }
 
-    lastOutActivity = millis();
+// Start Tasmota patch
+//    lastOutActivity = millis();
+
+    if (rc > 0) {
+      lastOutActivity = millis();
+    }
+// End Tasmota patch
 
     expectedLength = 1 + llen + 2 + tlen + plength;
 
@@ -534,7 +573,15 @@ boolean PubSubClient::beginPublish(const char* topic, unsigned int plength, bool
         }
         size_t hlen = buildHeader(header, this->buffer, plength+length-MQTT_MAX_HEADER_SIZE);
         uint16_t rc = _client->write(this->buffer+(MQTT_MAX_HEADER_SIZE-hlen),length-(MQTT_MAX_HEADER_SIZE-hlen));
-        lastOutActivity = millis();
+
+// Start Tasmota patch
+//        lastOutActivity = millis();
+
+        if (rc > 0) {
+           lastOutActivity = millis();
+        }
+// End Tasmota patch
+
         return (rc == (length-(MQTT_MAX_HEADER_SIZE-hlen)));
     }
     return false;
@@ -545,13 +592,37 @@ int PubSubClient::endPublish() {
 }
 
 size_t PubSubClient::write(uint8_t data) {
-    lastOutActivity = millis();
-    return _client->write(data);
+// Start Tasmota patch
+//    lastOutActivity = millis();
+//    return _client->write(data);
+
+    if (_client == nullptr) {
+        lastOutActivity = millis();
+        return 0;
+    }
+    size_t rc = _client->write(data);
+    if (rc != 0) {
+        lastOutActivity = millis();
+    }
+    return rc;
+// End Tasmota patch
 }
 
 size_t PubSubClient::write(const uint8_t *buffer, size_t size) {
-    lastOutActivity = millis();
-    return _client->write(buffer,size);
+// Start Tasmota patch
+//    lastOutActivity = millis();
+//    return _client->write(buffer,size);
+
+    if (_client == nullptr) {
+        lastOutActivity = millis();
+        return 0;
+    }
+    size_t rc = _client->write(buffer,size);
+    if (rc != 0) {
+        lastOutActivity = millis();
+    }
+    return rc;
+// End Tasmota patch
 }
 
 size_t PubSubClient::buildHeader(uint8_t header, uint8_t* buf, uint16_t length) {
@@ -597,7 +668,15 @@ boolean PubSubClient::write(uint8_t header, uint8_t* buf, uint16_t length) {
     return result;
 #else
     rc = _client->write(buf+(MQTT_MAX_HEADER_SIZE-hlen),length+hlen);
-    lastOutActivity = millis();
+
+// Start Tasmota patch
+//    lastOutActivity = millis();
+
+    if (rc != 0) {
+        lastOutActivity = millis();
+    }
+// End Tasmota patch
+
     return (rc == hlen+length);
 #endif
 }
@@ -684,6 +763,11 @@ uint16_t PubSubClient::writeString(const char* string, uint8_t* buf, uint16_t po
 boolean PubSubClient::connected() {
     boolean rc;
     if (_client == NULL ) {
+
+// Start Tasmota patch
+        this->_state = MQTT_DISCONNECTED;
+// End Tasmota patch
+
         rc = false;
     } else {
         rc = (int)_client->connected();
